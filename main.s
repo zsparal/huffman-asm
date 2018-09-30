@@ -343,10 +343,11 @@ print_codebook_loop:
   test   rdx, rdx
   jz     print_codebook_counters
 print_codebook_char:
-  mov    rdi, OFFSET bitstr_cnt
-  mov    rsi, rbx
-  xor    rax, rax
-  call   printf
+  mov    rdi, QWORD PTR [r10]
+  mov    rsi, rdx
+  call   print_binary
+  mov    rdi, 10
+  call   putchar
 print_codebook_counters:
   inc    rbx
   jmp    print_codebook_loop
@@ -356,23 +357,24 @@ print_codebook_done:
   ret
 
 # rdi - the number to print in binary
-print_binary_64:
+# rsi - number of bits to print
+print_binary:
   push   r12
   push   r13
   mov    r12, rdi
-  mov    r13, 64
-print_binary_64_loop:
+  mov    r13, rsi
+print_binary_loop:
   dec    r13
   cmp    r13, -1
-  je     print_binary_64_done
+  je     print_binary_done
   mov    rdi, r12
   mov    rcx, r13
   shr    rdi, cl
   and    rdi, 1
   add    rdi, 48
   call   putchar
-  jmp    print_binary_64_loop
-print_binary_64_done:
+  jmp    print_binary_loop
+print_binary_done:
   pop    r13
   pop    r12
   ret
