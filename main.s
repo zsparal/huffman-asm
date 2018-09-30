@@ -8,36 +8,131 @@
 
 .section .rodata
   leaf_fmt:   .string "%2$c: %1$d\n"
+  bitstr_cnt: .string "%c: %d\n"
   branch_fmt: .string "BR: %d\n"
   text:       .string "bibbity bobbity"
 
-  .equ tree_left,  0
-  .equ tree_right, 8
-  .equ tree_count, 16
-  .equ tree_value, 20
-  .equ tree_size,  24
+  .equ bitstr_length,   32
+  .equ bitstr_size,     40
+  .equ codebook_size,   256 * bitstr_size
 
-  .equ heap_data, 0
-  .equ heap_len,  8
-  .equ heap_cap,  12
-  .equ heap_size, 16
+  .equ tree_left,       0
+  .equ tree_right,      8
+  .equ tree_count,      16
+  .equ tree_value,      20
+  .equ tree_size,       24
+
+  .equ heap_data,       0
+  .equ heap_len,        8
+  .equ heap_cap,        12
+  .equ heap_size,       16
 
 .section .text
   .global main
-  .extern printf, calloc, malloc, realloc
+  .extern printf, calloc, malloc, realloc, putchar
 
 main:
+  push   r12
+  push   r13
+  sub    rsp, codebook_size
+
   mov    rdi, OFFSET text
   call   generate_tree
-  mov    rdi, rax
+  mov    r12, rax
+  
+  mov    rdi, rsp
+  mov    rsi, r12
+  call   generate_codebook
+
+  mov    rdi, rsp
+  call   print_codebook
+
+  mov    rdi, r12
   call   print_tree
+
+  mov    rdi, r12
+  call   free_tree
+
+
+  add    rsp, codebook_size
+  pop    r13
+  pop    r12
+
   xor    rax, rax
   ret
 
-# rdi - Huffman-tree root (ptr)
+# rdi - The starting address of the codebook we want to generate
+# rsi - Huffman-tree root (ptr)
 generate_codebook:
+  push   rbx                                # Needed to preserve 16-byte stack alignment
+  sub    rsp, bitstr_size
+  xorps  xmm0, xmm0                         # Create a 0-initialized bitstring. This will be
+  movups XMMWORD PTR [rsp], xmm0            # used in the recursive function calls
+  movups XMMWORD PTR [rsp + 16], xmm0
+  mov    QWORD PTR [rsp + 32], 0
+  mov    rdx, rsp
+  call   generate_codebook_recurse
+  add    rsp, bitstr_size
+  pop    rbx
   ret
 
+# rdi - The codebook's starting address
+# rsi - The current Huffman-tree node
+# rdx - The bitstring used for code generation
+generate_codebook_recurse:
+  push   rbp
+  push   r12
+  push   r13
+  push   r14
+  push   r15
+  test   rdi, rdi                           # If we reached a null pointer we're done 
+  jz     generate_codebook_recurse_done
+  mov    r12, rdi                           # If not, save the arguments we don't want clobbered
+  mov    r13, rsi
+  mov    r14, rdx
+  cmp    QWORD PTR [r13 + tree_left], 0     # If at least one of the children is not null
+  jnz    generate_codebook_branch           # then we need to treat the current node as a branch
+  cmp    QWORD PTR [r13 + tree_right], 0
+  jnz    generate_codebook_branch
+  mov    r8d, DWORD PTR [r13 + tree_value]  # Get the value of the current node
+  movups xmm0, XMMWORD PTR [r14]            # Get the values of the current bitstring into some registers
+  movups xmm1, XMMWORD PTR [r14 + 16]
+  mov    r9, QWORD PTR [r14 + 32]
+  lea    rax, [r8 + 4*r8]                   # The index calculation needs to add 40 * index. With lea arithmetic this can be represented as
+  lea    r10, [r12 + 4*rax]                 # base address + 4 * (5 * index). This is done in two lea instructions
+  movups XMMWORD PTR [r10], xmm0            # And copy the data over to it
+  movups XMMWORD PTR [r10 + 16], xmm1
+  mov    QWORD PTR [r10 + 32], r9
+  jmp    generate_codebook_recurse_done
+generate_codebook_branch:
+  # At this point: rbx - left child, rax - right child
+  # We'll start with the right branch
+  mov    r15, QWORD PTR [r14 + bitstr_length] # Load the current length of the bitstring
+  mov    rcx, r15                             # This will be used to index into the bitstring data. We'll need two copies for it
+  shr    r15, 6                               # We first get which 64 bit chunk of the bitstring we want to modify
+  and    rcx, 63                              # Then the bit we want to change
+  mov    rbp, 1                               # Generate the mask we'll use to set the correct bit
+  shl    rbp, cl
+  or     QWORD PTR [r14 + 8*r15], rbp         # Set the bit
+  inc    QWORD PTR [r14 + bitstr_length]      # Increase the bitstring length
+  mov    rsi, QWORD PTR [r13 + tree_right]
+  call   generate_codebook_recurse
+  # Now we move on to the left branch: rbx - left child, r15 - bitstring index, rbp - mask
+  not    rbp
+  and    QWORD PTR [r14 + 8*r15], rbp
+  mov    rdi, r12
+  mov    rsi, QWORD PTR [r13 + tree_left]
+  mov    rdx, r14
+  call   generate_codebook_recurse
+  dec    QWORD PTR [r14 + bitstr_length]      # Decrease the bitstring length
+generate_codebook_recurse_done:
+  pop    r15
+  pop    r14
+  pop    r13
+  pop    r12
+  pop    rbp
+  ret
+  
 
 # rdi - text
 # RET rax - Huffman-tree root (ptr)
@@ -76,7 +171,7 @@ generate_tree_leaves:
   mov    rsi, rax
   call   heap_push
 generate_tree_leaves_counters:
-  dec    r12                                # Increment the loop counter and start over
+  dec    r12                                # Decrement the loop counter and start over
   jmp    generate_tree_leaves
 generate_tree_branches:
   cmp    DWORD PTR [rsp + heap_len], 1      # Check if there are still at least two elements in the heap
@@ -230,5 +325,70 @@ print_tree_current:
   mov    rbx, [rbx + tree_right]            # Load the right child
   test   rbx, rbx
   jnz    print_tree_main                    # And if it's not null, print it
+  pop    rbx
+  ret
+
+# rdi - codebook start ptr
+print_codebook:
+  push   rbx
+  push   r12
+  mov    r12, rdi
+  xor    rbx, rbx                          # Save the loop counter into a register that doesn't get clobbered
+print_codebook_loop:
+  cmp    rbx, 255
+  jg     print_codebook_done
+  lea    rax, [rbx + 4*rbx]                   
+  lea    r10, [r12 + 4*rax] 
+  mov    rdx, QWORD PTR [r10 + bitstr_length]
+  test   rdx, rdx
+  jz     print_codebook_counters
+print_codebook_char:
+  mov    rdi, OFFSET bitstr_cnt
+  mov    rsi, rbx
+  xor    rax, rax
+  call   printf
+print_codebook_counters:
+  inc    rbx
+  jmp    print_codebook_loop
+print_codebook_done:
+  pop    r12
+  pop    rbx
+  ret
+
+# rdi - the number to print in binary
+print_binary_64:
+  push   r12
+  push   r13
+  mov    r12, rdi
+  mov    r13, 64
+print_binary_64_loop:
+  dec    r13
+  cmp    r13, -1
+  je     print_binary_64_done
+  mov    rdi, r12
+  mov    rcx, r13
+  shr    rdi, cl
+  and    rdi, 1
+  add    rdi, 48
+  call   putchar
+  jmp    print_binary_64_loop
+print_binary_64_done:
+  pop    r13
+  pop    r12
+  ret
+
+# rdi - tree ptr
+free_tree:
+  push   rbx
+  mov    rbx, rdi
+  test   rbx, rbx
+  jz     free_tree_done
+  mov    rdi, [rbx + tree_left]
+  call   free_tree
+  mov    rdi, [rbx + tree_right]
+  call   free_tree
+  mov    rdi, rbx
+  call   free
+free_tree_done:
   pop    rbx
   ret
