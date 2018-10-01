@@ -11,7 +11,7 @@
   branch_fmt: .string "BR: %d\n"
   text:       .string "bibbity bobbity"
 
-  .equ bitstr_length,    32
+  .equ bitstr_len,       32
   .equ bitstr_size,      40
   .equ codebook_size,    256 * bitstr_size
 
@@ -23,51 +23,93 @@
 
   .equ heap_len,         0
   .equ heap_data,        4
-  .equ heap_size,        512 * 8 + 16 # 512 ptrs + 4 byte length + 12 byte padding
+  .equ heap_size,        512 * 8 + 16         # 512 ptrs + 4 byte length + 12 byte padding
   .equ counts_size,      256 * 4
 
+  .equ msg_len,          0
+  .equ msg_data,         8
 .section .text
   .global main
-  .extern printf, calloc, malloc, memset, puts
+  .extern printf, calloc, malloc, realloc, memset, puts
 
 main:
   push   r12
   push   r13
-  sub    rsp, codebook_size
+  sub    rsp, codebook_size + 16              # 8 extra bytes for the Huffman-tree ptr
 
   mov    rdi, OFFSET text
-  call   generate_tree
-  mov    r12, rax
-  
-  mov    rdi, rsp
-  mov    rsi, r12
-  call   generate_codebook
+  mov    rsi, rsp
+  lea    rdx, [rsp + codebook_size]
+  call   encode
 
   mov    rdi, rsp
   call   print_codebook
 
-  mov    rdi, r12
+  mov    rdi, [rsp + codebook_size]
   call   free_tree
 
 
-  add    rsp, codebook_size
+  add    rsp, codebook_size + 16
   pop    r13
   pop    r12
 
   xor    rax, rax
   ret
 
+# rdi - text
+# rsi - codebook ptr
+# rdx - Huffman-tree ptr
+# RET rax - encoded message ptr
+encode:
+  push   r12
+  push   r13
+  push   r14
+
+  mov    r12, rdi                             # Save the original arguments
+  mov    r13, rsi
+  mov    r14, rdx
+
+  call   generate_tree                        # The text is already in rdi
+  mov    QWORD PTR [r14], rax                 # Save the Huffman-tree's root
+
+  mov    rdi, r13                             # Set up the parameters for codebook generation: codebook ptr, Huffman-tree root
+  mov    rsi, rax
+  call   generate_codebook
+
+  xor    rax, rax
+  xor    r10, r10                             # We'll use r10 to keep track of the length of the message
+  mov    rcx, r12                             # Make a copy of the pointer to the message to be encoded
+encode_calculate_length:
+  mov    al, BYTE PTR [rcx]
+  test   al, al                               # If we're at the terminating null character then we're ready to encode
+  jz     encode_message
+  lea    rdx, [rax + 4*rax]                   # We get the codebook entry at the specific index   
+  lea    r8, [r13 + 4*rdx] 
+  add    r10, QWORD PTR [r8 + bitstr_len]     # And add the encoded word length to the total
+  inc    rcx
+  jmp    encode_calculate_length
+encode_message:
+  lea    rdi, [r10 + 7]                       # Calculate the number of bytes we need to allocate to fit all the bits
+  shr    rdi, 3                               # length % 8 rounded up = (length + 8 - 1) / 8
+  call   malloc                               # Allocate the necessary memory
+  mov    QWORD PTR [rax], r10                 # Save the length of the message
+encode_message_bits:
+  pop    r14
+  pop    r13
+  pop    r12
+  ret
+
 # rdi - The starting address of the codebook we want to generate
 # rsi - Huffman-tree root (ptr)
 generate_codebook:
-  sub    rsp, bitstr_size
+  sub    rsp, bitstr_size + 8                 # 8 extra bytes for alignment
   xorps  xmm0, xmm0                           # Create a 0-initialized bitstring. This will be
-  movups XMMWORD PTR [rsp], xmm0              # used in the recursive function calls
-  movups XMMWORD PTR [rsp + 16], xmm0
+  movaps XMMWORD PTR [rsp], xmm0              # used in the recursive function calls
+  movaps XMMWORD PTR [rsp + 16], xmm0
   mov    QWORD PTR [rsp + 32], 0
   mov    rdx, rsp
   call   generate_codebook_recurse
-  add    rsp, bitstr_size
+  add    rsp, bitstr_size + 8
   ret
 
 # rdi - The codebook's starting address
@@ -85,8 +127,8 @@ generate_codebook_recurse:
   cmp    QWORD PTR [r12 + tree_right], 0
   jnz    generate_codebook_branch
   mov    r8d, DWORD PTR [r12 + tree_value]    # Get the value of the current node
-  movups xmm0, XMMWORD PTR [rdx]              # Get the values of the current bitstring into some registers
-  movups xmm1, XMMWORD PTR [rdx + 16]
+  movaps xmm0, XMMWORD PTR [rdx]              # Get the values of the current bitstring into some registers
+  movaps xmm1, XMMWORD PTR [rdx + 16]
   mov    r9, QWORD PTR [rdx + 32]
   lea    rax, [r8 + 4*r8]                     # The index calculation needs to add 40 * index. With lea arithmetic this can be represented as
   lea    r10, [rdi + 4*rax]                   # base address + 4 * (5 * index). This is done in two lea instructions
@@ -96,7 +138,7 @@ generate_codebook_recurse:
   jmp    generate_codebook_recurse_done
 generate_codebook_branch:
   # First, calculate the necessary indices and bitmask to use for the bitstring
-  mov    r13, QWORD PTR [rdx + bitstr_length] # Load the current length of the bitstring
+  mov    r13, QWORD PTR [rdx + bitstr_len]    # Load the current length of the bitstring
   mov    rcx, r13                             # This will be used to index into the bitstring data. We'll need two copies for it
   shr    r13, 6                               # We first get which 64 bit chunk of the bitstring we want to modify
   and    rcx, 63                              # Then the bit we want to change
@@ -104,7 +146,7 @@ generate_codebook_branch:
   shl    rbp, cl
   # We'll start with the right branch
   or     QWORD PTR [rdx + 8*r13], rbp         # Set the bit
-  inc    QWORD PTR [rdx + bitstr_length]      # Increase the bitstring length
+  inc    QWORD PTR [rdx + bitstr_len]         # Increase the bitstring length
   mov    rsi, QWORD PTR [r12 + tree_right]
   call   generate_codebook_recurse
   # Now we move on to the left branch: rbx - left child, r13 - bitstring index, rbp - mask
@@ -112,7 +154,7 @@ generate_codebook_branch:
   and    QWORD PTR [rdx + 8*r13], rbp
   mov    rsi, QWORD PTR [r12 + tree_left]
   call   generate_codebook_recurse
-  dec    QWORD PTR [rdx + bitstr_length]      # Decrease the bitstring length
+  dec    QWORD PTR [rdx + bitstr_len]         # Decrease the bitstring length
 generate_codebook_recurse_done:
   pop    r13
   pop    r12
@@ -124,7 +166,7 @@ generate_codebook_recurse_done:
 generate_tree:
   push   r12
   push   r13
-  sub    rsp, 4176                            # 1024 bytes for the char counts, 4 bytes for heap length, 4096 bytes for the heap, 12 byte padding
+  sub    rsp, 5128                            # 1024 bytes for the char counts, 4 bytes for heap length, 4096 bytes for the heap, 4 byte padding
   mov    r12, rdi                             # Save the original text so it doesn't get clobbered
   mov    rdi, rsp                             # Zero out the character counts and the heap length
   xor    rsi, rsi
@@ -134,13 +176,11 @@ generate_tree:
 generate_tree_count_chars:
   mov    al, BYTE PTR [r12]
   test   al, al
-  jz     generate_tree_construct_heap
+  jz     generate_tree_leaves_setup
   inc    DWORD PTR [rsp + 4*rax]
   inc    r12
   jmp    generate_tree_count_chars
-generate_tree_construct_heap:
-  xorps  xmm0, xmm0                           # Generate the zeroed heap
-  movaps XMMWORD PTR [rsp], xmm0
+generate_tree_leaves_setup:
   mov    r12, 255                             # The loop counter
   cmp    r12, 0                               # Check if we reached zero (on subsequent iterations "dec" sets the correct flag)
 generate_tree_leaves:
@@ -182,7 +222,7 @@ generate_tree_branches:
 generate_tree_done:
   lea    rdi, [rsp + counts_size]             # The tree's root will be in rax after the pop
   call   heap_pop
-  add    rsp, 4176
+  add    rsp, 5128
   pop    r13
   pop    r12
   ret
@@ -303,7 +343,7 @@ print_codebook_loop:
   jg     print_codebook_done
   lea    rax, [rbx + 4*rbx]                   # We get the codebook entry at the specific index   
   lea    r10, [r12 + 4*rax] 
-  mov    rdx, QWORD PTR [r10 + bitstr_length] # Load the length of the bitstring
+  mov    rdx, QWORD PTR [r10 + bitstr_len]    # Load the length of the bitstring
   test   rdx, rdx                             # If it's zero then the codepoint didn't exist in the original alphabet, skip
   jz     print_codebook_counters
 print_codebook_char:
