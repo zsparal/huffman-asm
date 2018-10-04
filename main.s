@@ -4,7 +4,7 @@
 # Params: rdi, rsi, rdx, rcx, r8, r9, xmm0-7
 # Return: rax (int 64 bits), rax:rdx (int 128 bits), xmm0 (float)
 # Callee cleanup: rbx, rbp, r12-15
-# Scratch: rax, rdi, rsi, rdx, rcx, r8, r9, r10, r11 
+# Scratch: rax, rdi, rsi, rdx, rcx, r8, r9, r10, r11
 
 .section .rodata
   text:       .string "bibbity bobbity"
@@ -109,8 +109,8 @@ encode_calculate_length:
   mov    al, BYTE PTR [rcx]
   test   al, al                               # If we're at the terminating null character then we're ready to encode
   jz     encode_message
-  lea    rdx, [rax + 4*rax]                   # We get the codebook entry at the specific index   
-  lea    r8, [r13 + 4*rdx] 
+  lea    rdx, [rax + 4*rax]                   # We get the codebook entry at the specific index
+  lea    r8, [r13 + 4*rdx]
   add    r14, QWORD PTR [r8 + bitstr_len]     # And add the encoded word length to the total
   inc    rcx
   jmp    encode_calculate_length
@@ -148,7 +148,7 @@ encode_message_bits_qword:
   shr    rsi, cl
   mov    rcx, r11                             # Copy the code length so we can manipulate it without destroying the original value
   sub    rcx, 64
-  jle    encode_message_bits_try_overflow     # If the length was less than or equal to 64, check if the code qword would overflow the current message block   
+  jle    encode_message_bits_try_overflow     # If the length was less than or equal to 64, check if the code qword would overflow the current message block
   mov    r11, rcx                             # We wanted to subtract 64 from the code length anyway
   lea    r9, [r9 + 8]                         # Load the next message block
   or     QWORD PTR [r9], rsi                  # Save the second mask to the new message block
@@ -160,7 +160,7 @@ encode_message_bits_try_overflow:
   lea    r9, [r9 + 8]                         # Load the next message block
   or     QWORD PTR [r9], rsi                  # Save the second mask to the new message block
   inc    r12                                  # Go to the next character in the input
-  jmp    encode_message_bits                  
+  jmp    encode_message_bits
 encode_calculate_new_bit_offset:
   lea    r8, [r8 + r11]                       # Calculate the bit offset for the next code qword
   inc    r12
@@ -194,7 +194,7 @@ decode_loop:
 decode_loop_char:
   test   rsi, rsi                             # If the Huffman-tree node is null then we reached a dead-end -> start over
   jz     decode_loop
-  cmp    QWORD PTR [rsi + tree_left], 0
+  cmp    QWORD PTR [rsi + tree_left], 0       # If the node has either a left or a right child, treat it as a branch
   jnz    decode_loop_char_branch
   cmp    QWORD PTR [rsi + tree_right], 0
   jnz    decode_loop_char_branch
@@ -212,7 +212,7 @@ decode_loop_char_branch:
   lea    rcx, [r11 + 1]                       # Restore rcx and immediately add 1 to get the next bit to decode
   and    r10, 0x1                             # Zero out all other bits
   mov    r8, rsi
-  mov    rsi, QWORD PTR [r8 + tree_left]     # Take the left branch for 0, the right branch for a non-zero bit
+  mov    rsi, QWORD PTR [r8 + tree_left]      # Take the left branch for 0, the right branch for a non-zero bit
   cmovnz rsi, QWORD PTR [r8 + tree_right]
   jmp    decode_loop_char
 decode_done:
@@ -242,7 +242,7 @@ generate_codebook_recurse:
   push   rbp
   push   r12
   push   r13
-  test   rdi, rdi                             # If we reached a null pointer we're done 
+  test   rdi, rdi                             # If we reached a null pointer we're done
   jz     generate_codebook_recurse_done
   mov    r12, rsi
   cmp    QWORD PTR [r12 + tree_left], 0       # If at least one of the children is not null
@@ -312,7 +312,7 @@ generate_tree_leaves:
   test   r13d, r13d                           # And check if it's zero
   jz     generate_tree_leaves_counters        # If it is we can skip this iteration
   mov    rdi, 1                               # If not, we need to allocate a new leaf node
-  mov    rsi, tree_size                     
+  mov    rsi, tree_size
   call   calloc
   mov    DWORD PTR [rax + tree_value], r12d   # Save the value and the count to the tree
   mov    DWORD PTR [rax + tree_count], r13d
@@ -364,14 +364,14 @@ heap_push_sift_up:
   lea    rdx, [rcx - 1]                       # Calculate the parent index: (index - 1) / 2
   shr    rdx, 1
   lea    r8, [rax + 8*rcx]                    # Get the pointer to the current and parent elements
-  lea    r9, [rax + 8*rdx]              
+  lea    r9, [rax + 8*rdx]
   mov    r10, QWORD PTR [r8]                  # Load the current and the parent elements
-  mov    r11, QWORD PTR [r9]                            
+  mov    r11, QWORD PTR [r9]
   mov    esi, DWORD PTR [r10 + tree_count]    # Load the current tree's count
   cmp    DWORD PTR [r11 + tree_count], esi    # If parent count <= current count
   jle    heap_push_done                       # Then we're done
   mov    QWORD PTR [r8], r11                  # Otherwise swap the two elements
-  mov    QWORD PTR [r9], r10 
+  mov    QWORD PTR [r9], r10
   mov    rcx, rdx
   jmp    heap_push_sift_up
 heap_push_done:
@@ -380,7 +380,7 @@ heap_push_done:
 # rdi - heap ptr
 # RET rax - tree ptr
 heap_pop:
-  mov    r8d, DWORD PTR [rdi + heap_len]      # Load the heap's length 
+  mov    r8d, DWORD PTR [rdi + heap_len]      # Load the heap's length
   test   r8d, r8d                             # If it's 0 then the heap's empty
   jz     heap_empty
   lea    rdx, [rdi + heap_data]               # Get the heap's data ptr
@@ -398,7 +398,7 @@ heap_pop_sift_down:
   cmp    r10, r8
   jge    heap_pop_check_right
   mov    rdi, QWORD PTR [rdx + 8*r10]         # Load the left child
-  mov    rsi, QWORD PTR [rdx + 8*rcx]         # Load the target     
+  mov    rsi, QWORD PTR [rdx + 8*rcx]         # Load the target
   mov    esi, DWORD PTR [rsi + tree_count]    # Load the target tree count
   cmp    DWORD PTR [rdi + tree_count], esi    # If the left tree count < target tree count
   jge    heap_pop_check_right
@@ -407,7 +407,7 @@ heap_pop_check_right:
   cmp    r11, r8
   jge    heap_pop_compare_indices
   mov    rdi, QWORD PTR [rdx + 8*r11]         # Load the right child
-  mov    rsi, QWORD PTR [rdx + 8*rcx]         # Load the target     
+  mov    rsi, QWORD PTR [rdx + 8*rcx]         # Load the target
   mov    esi, DWORD PTR [rsi + tree_count]    # Load the target tree count
   cmp    DWORD PTR [rdi + tree_count], esi    # If the right tree count < target tree count
   jge    heap_pop_compare_indices
@@ -437,8 +437,8 @@ print_codebook:
 print_codebook_loop:
   cmp    rbx, 255
   jg     print_codebook_done
-  lea    rax, [rbx + 4*rbx]                   # We get the codebook entry at the specific index   
-  lea    r10, [r12 + 4*rax] 
+  lea    rax, [rbx + 4*rbx]                   # We get the codebook entry at the specific index
+  lea    r10, [r12 + 4*rax]
   mov    rdx, QWORD PTR [r10 + bitstr_len]    # Load the length of the bitstring
   test   rdx, rdx                             # If it's zero then the codepoint didn't exist in the original alphabet, skip
   jz     print_codebook_counters
@@ -487,7 +487,7 @@ print_message_generate_string:
   mov    r8, rdx                              # Get two copies of the current index
   mov    rcx, rdx
   shr    r8, 3                                # We first get the byte we want to print
-  mov    r10b, BYTE PTR [r12 + r8 + msg_data]            
+  mov    r10b, BYTE PTR [r12 + r8 + msg_data]
   and    rcx, 7                               # Then the bit in that byte
   shr    r10, cl
   and    r10, 0x1                             # Mask it so only the bit we're interested in is visible
