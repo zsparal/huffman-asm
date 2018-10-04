@@ -41,13 +41,16 @@ main:
   mov    rsi, rsp
   lea    rdx, [rsp + codebook_size]
   call   encode
+  mov    r12, rax                             # Save the returned message ptr
 
   mov    rdi, rsp
   call   print_codebook
 
+  mov    rdi, r12
+  call   print_message
+
   mov    rdi, [rsp + codebook_size]
   call   free_tree
-
 
   add    rsp, codebook_size + 16
   pop    r13
@@ -64,20 +67,16 @@ encode:
   push   r12
   push   r13
   push   r14
-
   mov    r12, rdi                             # Save the original arguments
   mov    r13, rsi
   mov    r14, rdx
-
   call   generate_tree                        # The text is already in rdi
   mov    QWORD PTR [r14], rax                 # Save the Huffman-tree's root
-
   mov    rdi, r13                             # Set up the parameters for codebook generation: codebook ptr, Huffman-tree root
   mov    rsi, rax
   call   generate_codebook
-
   xor    rax, rax
-  xor    r10, r10                             # We'll use r10 to keep track of the length of the message
+  xor    r14, r14                             # We'll use r14 to keep track of the length of the message
   mov    rcx, r12                             # Make a copy of the pointer to the message to be encoded
 encode_calculate_length:
   mov    al, BYTE PTR [rcx]
@@ -85,15 +84,61 @@ encode_calculate_length:
   jz     encode_message
   lea    rdx, [rax + 4*rax]                   # We get the codebook entry at the specific index   
   lea    r8, [r13 + 4*rdx] 
-  add    r10, QWORD PTR [r8 + bitstr_len]     # And add the encoded word length to the total
+  add    r14, QWORD PTR [r8 + bitstr_len]     # And add the encoded word length to the total
   inc    rcx
   jmp    encode_calculate_length
 encode_message:
-  lea    rdi, [r10 + 7]                       # Calculate the number of bytes we need to allocate to fit all the bits
-  shr    rdi, 3                               # length % 8 rounded up = (length + 8 - 1) / 8
-  call   malloc                               # Allocate the necessary memory
-  mov    QWORD PTR [rax], r10                 # Save the length of the message
+  mov    rdi, 1
+  lea    rsi, [r14 + 7]                       # Calculate the number of bytes we need to allocate to fit all the bits
+  shr    rsi, 3                               # length % 8 rounded up = (length + 8 - 1) / 8
+  lea    rsi, [rsi + 8]                       # Make space for an 8-byte length field
+  call   calloc                               # Allocate the necessary memory, the message will be in rax
+  mov    QWORD PTR [rax], r14                 # Save the length of the message
+  # Registers:
+  #   - r12: text
+  #   - r13: codebook_ptr
+  #   - rax: message ptr
+  #   - free to use: rdi, rsi, rcx, rdx, r8, r9, r10, r11, r14
+  xor    r8, r8                               # Bit offset
+  lea    r9, [rax + 8]                        # 8-byte message block
 encode_message_bits:
+  xor    rdi, rdi                             # We need to clear rdi because moving a single byte to dil doesn't do so
+  mov    dil, BYTE PTR [r12]                  # Iterate the message again
+  test   dil, dil                             # If we're at the the null terminator we're done
+  jz     encode_done
+  lea    rdx, [rdi + 4*rdi]                   # Get the codebook entry
+  lea    r10, [r13 + 4*rdx]
+  mov    r11, QWORD PTR [r10 + bitstr_len]    # Load the bitstring length
+  lea    r14, [r10]                           # The bitstring qword we're currently processing
+encode_message_bits_qword:
+  mov    rdi, QWORD PTR [r14]                 # Calculate the first mask: [code qword] << [bit offset]
+  mov    rsi, rdi                             # Get a second copy of the code's current qword
+  mov    rcx, r8
+  shl    rdi, cl
+  or     QWORD PTR [r9], rdi                  # Apply the mask to the current block
+  mov    rcx, 64                              # Calculate the second mask: [code qword] >> [64 - bit offset]
+  sub    rcx, r8
+  shr    rsi, cl
+  mov    rcx, r11                             # Copy the code length so we can manipulate it without destroying the original value
+  sub    rcx, 64
+  jle    encode_message_bits_try_overflow     # If the length was less than or equal to 64, check if the code qword would overflow the current message block   
+  mov    r11, rcx                             # We wanted to subtract 64 from the code length anyway
+  lea    r9, [r9 + 8]                         # Load the next message block
+  or     QWORD PTR [r9], rsi                  # Save the second mask to the new message block
+  jmp    encode_message_bits_qword
+encode_message_bits_try_overflow:
+  add    rcx, r8                              # Calculate [code length] + [bit offset] - 64
+  jl     encode_calculate_new_bit_offset      # If the result is less than 0 then we have no remaining bits -> calculate the new bit offset
+  mov    r8, rcx                              # Otherwise this also happens to be our new bit offset
+  lea    r9, [r9 + 8]                         # Load the next message block
+  or     QWORD PTR [r9], rsi                  # Save the second mask to the new message block
+  inc    r12                                  # Go to the next character in the input
+  jmp    encode_message_bits                  
+encode_calculate_new_bit_offset:
+  lea    r8, [r8 + r11]                       # Calculate the bit offset for the next code qword
+  inc    r12
+  jmp    encode_message_bits
+encode_done:
   pop    r14
   pop    r13
   pop    r12
@@ -335,7 +380,7 @@ print_tree_current:
 print_codebook:
   push   rbx
   push   r12
-  sub    rsp, 48                              # The bitstring we're going to print
+  sub    rsp, 272                             # The bitstring we're going to print
   mov    r12, rdi
   xor    rbx, rbx                             # Save the loop counter into a register that doesn't get clobbered
 print_codebook_loop:
@@ -370,9 +415,39 @@ print_codebook_counters:
   inc    rbx                                  # And go to the next codebook entry
   jmp    print_codebook_loop
 print_codebook_done:
-  add    rsp, 48
+  add    rsp, 272
   pop    r12
   pop    rbx
+  ret
+
+# rdi - message ptr
+# This would run out of stack space for long messages but it will do for now
+print_message:
+  push   r12
+  mov    rsi, QWORD PTR [rdi]                 # Get the length of the message
+  lea    r12, [rsi + 1]                       # And the length of the string we'll need with the null terminator
+  sub    rsp, r12
+  xor    rax, rax
+print_message_generate_string:
+  cmp    rax, rsi
+  jge    print_message_puts
+  mov    r8, rax                              # Get two copies of the current index
+  mov    rcx, rax
+  shr    r8, 3                                # We first get the byte we want to print
+  mov    r10b, BYTE PTR [rdi + r8 + msg_data]            
+  and    rcx, 7                               # Then the bit in that byte
+  shr    r10, cl
+  and    r10, 0x1                             # Mask it so only the bit we're interested in is visible
+  add    r10, '0'                             # Convert it to ASCII
+  mov    BYTE PTR [rsp + rax], r10b           # Write it into the printable string
+  inc    rax
+  jmp    print_message_generate_string
+print_message_puts:
+  mov    BYTE PTR [rsp + rax], 0              # Write the null terminator
+  mov    rdi, rsp                             # And print the string
+  call   puts
+  add    rsp, r12
+  pop    r12
   ret
 
 # rdi - tree ptr
