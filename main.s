@@ -7,9 +7,10 @@
 # Scratch: rax, rdi, rsi, rdx, rcx, r8, r9, r10, r11 
 
 .section .rodata
-  leaf_fmt:   .string "%2$c: %1$d\n"
-  branch_fmt: .string "BR: %d\n"
   text:       .string "bibbity bobbity"
+  original:   .string "Original message: %s\n"
+  encoded:    .string "Encoded message: "
+  decoded:    .string "Decoded message: %s\n"
 
   .equ bitstr_len,       32
   .equ bitstr_size,      40
@@ -30,12 +31,18 @@
   .equ msg_data,         8
 .section .text
   .global main
-  .extern printf, calloc, malloc, realloc, memset, puts
+  .extern printf, calloc, malloc, memset, puts
 
 main:
   push   r12
   push   r13
   sub    rsp, codebook_size + 16              # 8 extra bytes for the Huffman-tree ptr, 8 bytes for padding
+
+  # Print the original text
+  mov    rdi, OFFSET original
+  mov    rsi, OFFSET text
+  xor    rax, rax
+  call   printf
 
   # First encode the text. This will also initialize the Huffman-tree and the codebook
   mov    rdi, OFFSET text
@@ -47,13 +54,28 @@ main:
   # Print the codebook and the encoded message
   mov    rdi, rsp
   call   print_codebook
+  mov    rdi, OFFSET encoded
+  xor    rax, rax
+  call   printf
   mov    rdi, r12
   call   print_message
+
+  # Decode and print the message
+  mov    rdi, r12
+  mov    rsi, QWORD PTR [rsp + codebook_size]
+  call   decode
+  mov    r13, rax
+  mov    rdi, OFFSET decoded
+  mov    rsi, r13
+  xor    rax, rax
+  call   printf
 
   # Free allocated resources
   mov    rdi, r12
   call   free
-  mov    rdi, [rsp + codebook_size]
+  mov    rdi, r13
+  call   free
+  mov    rdi, QWORD PTR [rsp + codebook_size]
   call   free_tree
 
   add    rsp, codebook_size + 16
@@ -151,41 +173,53 @@ encode_done:
 
 # rdi - encoded message
 # rsi - Huffman-tree root (ptr)
+# RET rax - the decoded message
 decode:
-  ret
-
-# rdi - encoded message
-# rsi - Huffman-tree node
-# rdx - decoded string message
-# rcx - message bit index
-# RET rax - the next bit index
-decode_char:
-  mov    rax, rcx
-  test   rsi, rsi
-  jz     decode_char_done
+  push   r12
+  push   r13
+  push   r14
+  mov    r12, rdi
+  mov    r13, rsi
+  mov    rdi, QWORD PTR [r12]                 # Load the length of the message
+  mov    r14, rdi                             # We'll use the length of the message as a loop counter later
+  lea    rdi, [rdi + 1]                       # The null terminator
+  call   malloc                               # This will usually be more than enough memory to contain the whole decoded message (we don't handle pathological cases right now)
+  mov    rdi, r12                             # The single-character decoder doesn't touch rdi so we can hoist it before the loop
+  xor    rcx, rcx
+  mov    rdx, rax                             # The current byte in the output string
+decode_loop:
+  cmp    rcx, r14                             # The encoded message bit counter
+  jge    decode_done
+  mov    rsi, r13                             # The current node in the Huffman-tree
+decode_loop_char:
+  test   rsi, rsi                             # If the Huffman-tree node is null then we reached a dead-end -> start over
+  jz     decode_loop
   cmp    QWORD PTR [rsi + tree_left], 0
-  jnz    decode_char_branch
+  jnz    decode_loop_char_branch
   cmp    QWORD PTR [rsi + tree_right], 0
-  jnz    decode_char_branch
-  mov    r9d, DWORD PTR [rsi + tree_value]    # Load the character representation of the decoded bitstring
+  jnz    decode_loop_char_branch
+  mov    r9d, DWORD PTR [rsi + tree_value]    # Load the value in this node in case the next iteration needs it
   mov    BYTE PTR [rdx], r9b                  # And save it to the output
   lea    rdx, [rdx + 1]                       # Advance the output string
-  ret
-decode_char_branch:
+  jmp    decode_loop
+decode_loop_char_branch:
   mov    r9, rcx                              # First, load the byte of the message the current bit is in
   shr    r9, 3
-  mov    r10b, BYTE PTR [rdi + r9]
+  mov    r10b, BYTE PTR [rdi + r9 + msg_data]
   mov    r11, rcx                             # Save rcx in another register temporarily so we can restore it without push/pop
   and    rcx, 7
   shr    r10, cl                              # Get the bit we're interested in to position 0
   lea    rcx, [r11 + 1]                       # Restore rcx and immediately add 1 to get the next bit to decode
   and    r10, 0x1                             # Zero out all other bits
-  mov    rsi, [rsi + tree_left]               # Take the left branch for 0, the right branch for a non-zero bit
-  cmovnz rsi, [rsi + tree_right]
-  jmp    decode_char
-decode_char_branch_right:
-  mov    rsi, [rsi + tree_right]
-decode_char_done:
+  mov    r8, rsi
+  mov    rsi, QWORD PTR [r8 + tree_left]     # Take the left branch for 0, the right branch for a non-zero bit
+  cmovnz rsi, QWORD PTR [r8 + tree_right]
+  jmp    decode_loop_char
+decode_done:
+  mov    BYTE PTR [rdx], 0                    # Write the null terminator at the end of the string
+  pop    r14
+  pop    r13
+  pop    r12
   ret
 
 # rdi - The starting address of the codebook we want to generate
@@ -393,33 +427,6 @@ heap_empty:
   xor    rax, rax                             # Return a null pointer to indicate the heap was empty
   ret
 
-# rdi - tree ptr
-print_tree:
-  push   rbx                                
-  mov    rbx, rdi                             # Save the parameter in a register we can reuse during recursion
-print_tree_main:                              # Printing the right subtree is a tail call so we need a label after the setup part
-  mov    rdi, QWORD PTR [rbx + tree_left]     # Check if the left branch is null
-  test   rdi, rdi
-  jz     print_tree_leaf                      # If it is then it _might_ be a leaf, jump to that part
-  call   print_tree                           # If it is not, print it
-  jmp    print_tree_branch                    # At this point we know we're not printing a leaf
-print_tree_leaf:
-  mov    rdi, OFFSET leaf_fmt                 # Load the format string for leaves
-  cmp    QWORD PTR [rbx + tree_right], 0      # Check if the node is actually a leaf
-  jz     print_tree_current                   # And if it is, keep the leaf format string
-print_tree_branch:
-  mov    rdi, OFFSET branch_fmt
-print_tree_current:
-  mov    esi, DWORD PTR [rbx + tree_count]    # Print the current node
-  mov    edx, DWORD PTR [rbx + tree_value]
-  xor    rax, rax
-  call   printf
-  mov    rbx, [rbx + tree_right]              # Load the right child
-  test   rbx, rbx
-  jnz    print_tree_main                      # And if it's not null, print it
-  pop    rbx
-  ret
-
 # rdi - codebook start ptr
 print_codebook:
   push   rbx
@@ -438,7 +445,7 @@ print_codebook_loop:
 print_codebook_char:
   mov    BYTE PTR [rsp], bl                   # First, the character we're printing the code for
   mov    WORD PTR [rsp + 1], 0x203a           # Then ": "
-  mov    WORD PTR [rsp + rdx + 3], 0x0a00     # At the end, add a newline and the null terminator
+  mov    BYTE PTR [rsp + rdx + 3], 0x00       # At the end add the null terminator
 print_codebook_generate_binary:
   dec    rdx
   jl     print_codebook_binary
@@ -471,7 +478,7 @@ print_message:
   push   r13
   mov    r12, rdi
   mov    r13, QWORD PTR [rdi]                 # Get the length of the message
-  lea    rdi, [r13 + 1]                       # And the length of the string we'll need with the null terminator
+  lea    rdi, [r13 + 1]                       # For the length of the string we'll need an additional the null terminator
   call   malloc
   xor    rdx, rdx
 print_message_generate_string:
@@ -489,7 +496,7 @@ print_message_generate_string:
   inc    rdx
   jmp    print_message_generate_string
 print_message_puts:
-  mov    BYTE PTR [rax + rdx], 0              # Write the null terminator
+  mov    BYTE PTR [rax + rdx], 0x00           # Write the null terminator
   mov    rdi, rax                             # And print the string
   call   puts
   pop    r13
