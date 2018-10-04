@@ -35,20 +35,24 @@
 main:
   push   r12
   push   r13
-  sub    rsp, codebook_size + 16              # 8 extra bytes for the Huffman-tree ptr
+  sub    rsp, codebook_size + 16              # 8 extra bytes for the Huffman-tree ptr, 8 bytes for padding
 
+  # First encode the text. This will also initialize the Huffman-tree and the codebook
   mov    rdi, OFFSET text
   mov    rsi, rsp
   lea    rdx, [rsp + codebook_size]
   call   encode
   mov    r12, rax                             # Save the returned message ptr
 
+  # Print the codebook and the encoded message
   mov    rdi, rsp
   call   print_codebook
-
   mov    rdi, r12
   call   print_message
 
+  # Free allocated resources
+  mov    rdi, r12
+  call   free
   mov    rdi, [rsp + codebook_size]
   call   free_tree
 
@@ -56,6 +60,7 @@ main:
   pop    r13
   pop    r12
 
+  # Indiciate success with a 0 exit code
   xor    rax, rax
   ret
 
@@ -142,6 +147,45 @@ encode_done:
   pop    r14
   pop    r13
   pop    r12
+  ret
+
+# rdi - encoded message
+# rsi - Huffman-tree root (ptr)
+decode:
+  ret
+
+# rdi - encoded message
+# rsi - Huffman-tree node
+# rdx - decoded string message
+# rcx - message bit index
+# RET rax - the next bit index
+decode_char:
+  mov    rax, rcx
+  test   rsi, rsi
+  jz     decode_char_done
+  cmp    QWORD PTR [rsi + tree_left], 0
+  jnz    decode_char_branch
+  cmp    QWORD PTR [rsi + tree_right], 0
+  jnz    decode_char_branch
+  mov    r9d, DWORD PTR [rsi + tree_value]    # Load the character representation of the decoded bitstring
+  mov    BYTE PTR [rdx], r9b                  # And save it to the output
+  lea    rdx, [rdx + 1]                       # Advance the output string
+  ret
+decode_char_branch:
+  mov    r9, rcx                              # First, load the byte of the message the current bit is in
+  shr    r9, 3
+  mov    r10b, BYTE PTR [rdi + r9]
+  mov    r11, rcx                             # Save rcx in another register temporarily so we can restore it without push/pop
+  and    rcx, 7
+  shr    r10, cl                              # Get the bit we're interested in to position 0
+  lea    rcx, [r11 + 1]                       # Restore rcx and immediately add 1 to get the next bit to decode
+  and    r10, 0x1                             # Zero out all other bits
+  mov    rsi, [rsi + tree_left]               # Take the left branch for 0, the right branch for a non-zero bit
+  cmovnz rsi, [rsi + tree_right]
+  jmp    decode_char
+decode_char_branch_right:
+  mov    rsi, [rsi + tree_right]
+decode_char_done:
   ret
 
 # rdi - The starting address of the codebook we want to generate
