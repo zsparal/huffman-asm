@@ -468,29 +468,31 @@ print_codebook_done:
 # This would run out of stack space for long messages but it will do for now
 print_message:
   push   r12
-  mov    rsi, QWORD PTR [rdi]                 # Get the length of the message
-  lea    r12, [rsi + 1]                       # And the length of the string we'll need with the null terminator
-  sub    rsp, r12
-  xor    rax, rax
+  push   r13
+  mov    r12, rdi
+  mov    r13, QWORD PTR [rdi]                 # Get the length of the message
+  lea    rdi, [r13 + 1]                       # And the length of the string we'll need with the null terminator
+  call   malloc
+  xor    rdx, rdx
 print_message_generate_string:
-  cmp    rax, rsi
+  cmp    rdx, r13
   jge    print_message_puts
-  mov    r8, rax                              # Get two copies of the current index
-  mov    rcx, rax
+  mov    r8, rdx                              # Get two copies of the current index
+  mov    rcx, rdx
   shr    r8, 3                                # We first get the byte we want to print
-  mov    r10b, BYTE PTR [rdi + r8 + msg_data]            
+  mov    r10b, BYTE PTR [r12 + r8 + msg_data]            
   and    rcx, 7                               # Then the bit in that byte
   shr    r10, cl
   and    r10, 0x1                             # Mask it so only the bit we're interested in is visible
   add    r10, '0'                             # Convert it to ASCII
-  mov    BYTE PTR [rsp + rax], r10b           # Write it into the printable string
-  inc    rax
+  mov    BYTE PTR [rax + rdx], r10b           # Write it into the printable string
+  inc    rdx
   jmp    print_message_generate_string
 print_message_puts:
-  mov    BYTE PTR [rsp + rax], 0              # Write the null terminator
-  mov    rdi, rsp                             # And print the string
+  mov    BYTE PTR [rax + rdx], 0              # Write the null terminator
+  mov    rdi, rax                             # And print the string
   call   puts
-  add    rsp, r12
+  pop    r13
   pop    r12
   ret
 
