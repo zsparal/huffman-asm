@@ -34,18 +34,21 @@
   .extern printf, calloc, malloc, memset, puts
 
 main:
+  push   rbx
   push   r12
   push   r13
-  sub    rsp, codebook_size + 16              # 8 extra bytes for the Huffman-tree ptr, 8 bytes for padding
+  sub    rsp, codebook_size + 8               # 8 extra bytes for the Huffman-tree ptr
+
+  mov    rbx, QWORD PTR [rsi + 8]
 
   # Print the original text
   mov    rdi, OFFSET original
-  mov    rsi, OFFSET text
+  mov    rsi, rbx
   xor    rax, rax
   call   printf
 
   # First encode the text. This will also initialize the Huffman-tree and the codebook
-  mov    rdi, OFFSET text
+  mov    rdi, rbx
   mov    rsi, rsp
   lea    rdx, [rsp + codebook_size]
   call   encode
@@ -78,9 +81,10 @@ main:
   mov    rdi, QWORD PTR [rsp + codebook_size]
   call   free_tree
 
-  add    rsp, codebook_size + 16
+  add    rsp, codebook_size + 8
   pop    r13
   pop    r12
+  pop    rbx
 
   # Indiciate success with a 0 exit code
   xor    rax, rax
@@ -110,7 +114,7 @@ encode_calculate_length:
   test   al, al                               # If we're at the terminating null character then we're ready to encode
   jz     encode_message
   lea    rdx, [rax + 4*rax]                   # We get the codebook entry at the specific index
-  lea    r8, [r13 + 4*rdx]
+  lea    r8, [r13 + 8*rdx]
   add    r14, QWORD PTR [r8 + bitstr_len]     # And add the encoded word length to the total
   inc    rcx
   jmp    encode_calculate_length
@@ -134,7 +138,7 @@ encode_message_bits:
   test   dil, dil                             # If we're at the the null terminator we're done
   jz     encode_done
   lea    rdx, [rdi + 4*rdi]                   # Get the codebook entry
-  lea    r10, [r13 + 4*rdx]
+  lea    r10, [r13 + 8*rdx]
   mov    r11, QWORD PTR [r10 + bitstr_len]    # Load the bitstring length
   lea    r14, [r10]                           # The bitstring qword we're currently processing
 encode_message_bits_qword:
@@ -225,14 +229,25 @@ decode_done:
 # rdi - The starting address of the codebook we want to generate
 # rsi - Huffman-tree root (ptr)
 generate_codebook:
+  push   r12
+  push   r13
   sub    rsp, bitstr_size + 8                 # 8 extra bytes for alignment
+  mov    r12, rdi
+  mov    r13, rsi
   xorps  xmm0, xmm0                           # Create a 0-initialized bitstring. This will be
   movaps XMMWORD PTR [rsp], xmm0              # used in the recursive function calls
   movaps XMMWORD PTR [rsp + 16], xmm0
   mov    QWORD PTR [rsp + 32], 0
+  xor    rsi, rsi
+  mov    rdx, codebook_size
+  call   memset
+  mov    rdi, r12
+  mov    rsi, r13
   mov    rdx, rsp
   call   generate_codebook_recurse
   add    rsp, bitstr_size + 8
+  pop    r13
+  pop    r12
   ret
 
 # rdi - The codebook's starting address
@@ -254,7 +269,7 @@ generate_codebook_recurse:
   movaps xmm1, XMMWORD PTR [rdx + 16]
   mov    r9, QWORD PTR [rdx + 32]
   lea    rax, [r8 + 4*r8]                     # The index calculation needs to add 40 * index. With lea arithmetic this can be represented as
-  lea    r10, [rdi + 4*rax]                   # base address + 4 * (5 * index). This is done in two lea instructions
+  lea    r10, [rdi + 8*rax]                   # base address + 8 * (5 * index). This is done in two lea instructions
   movups XMMWORD PTR [r10], xmm0              # And copy the data over to it
   movups XMMWORD PTR [r10 + 16], xmm1
   mov    QWORD PTR [r10 + 32], r9
@@ -436,7 +451,7 @@ print_codebook_loop:
   cmp    rbx, 255
   jg     print_codebook_done
   lea    rax, [rbx + 4*rbx]                   # We get the codebook entry at the specific index
-  lea    r10, [r12 + 4*rax]
+  lea    r10, [r12 + 8*rax]
   mov    rdx, QWORD PTR [r10 + bitstr_len]    # Load the length of the bitstring
   test   rdx, rdx                             # If it's zero then the codepoint didn't exist in the original alphabet, skip
   jz     print_codebook_counters
