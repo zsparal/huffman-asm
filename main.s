@@ -78,8 +78,6 @@ main:
   call   free
   mov    rdi, r13
   call   free
-  mov    rdi, QWORD PTR [rsp + codebook_size]
-  call   free_tree
 
   add    rsp, codebook_size + 8
   pop    r13
@@ -322,9 +320,7 @@ generate_tree_leaves:
   mov    r13d, DWORD PTR [rsp + 4*r12]        # Load the count at the ith position
   test   r13d, r13d                           # And check if it's zero
   jz     generate_tree_leaves_counters        # If it is we can skip this iteration
-  mov    rdi, 1                               # If not, we need to allocate a new leaf node
-  mov    rsi, tree_size
-  call   calloc
+  call   tree_alloc
   mov    DWORD PTR [rax + tree_value], r12d   # Save the value and the count to the tree
   mov    DWORD PTR [rax + tree_count], r13d
   lea    rdi, [rsp + counts_size]             # Then push it onto the heap
@@ -343,7 +339,7 @@ generate_tree_branches:
   call   heap_pop
   mov    r13, rax
   mov    rdi, tree_size                       # Create the new tree node, the pointer to it will be in rax
-  call   malloc
+  call   tree_alloc
   mov    ecx, DWORD PTR [r12 + tree_count]    # The new node's count: left count + right count
   add    ecx, DWORD PTR [r13 + tree_count]
   mov    QWORD PTR [rax + tree_left], r12     # Save the new node's fields: left, right, count (leave value unititialized, it shouldn't be used with branch nodes)
@@ -513,18 +509,14 @@ print_message_puts:
   pop    r12
   ret
 
-# rdi - tree ptr
-free_tree:
-  push   rbx
-  mov    rbx, rdi
-  test   rbx, rbx                             # When the tree ptr we're trying to free is already null we reached the termination condition
-  jz     free_tree_done
-  mov    rdi, [rbx + tree_left]               # Otherwise free the left child first
-  call   free_tree
-  mov    rdi, [rbx + tree_right]              # Then the right child
-  call   free_tree
-  mov    rdi, rbx                             # And finally, the node itself
-  call   free
-free_tree_done:
-  pop    rbx
+tree_alloc:
+  mov    rax, QWORD PTR [rip + tree_next]
+  lea    rcx, [rax + 32]
+  mov    QWORD PTR [rip + tree_next], rcx
   ret
+
+.data
+  .comm tree, 16384, 32
+tree_next:
+  .quad tree + 32
+  .size tree_next, 8
