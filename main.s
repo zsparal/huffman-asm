@@ -37,7 +37,7 @@ main:
   push   rbx
   push   r12
   push   r13
-  sub    rsp, codebook_size + 8               # 8 extra bytes for the Huffman-tree ptr
+  sub    rsp, codebook_size                   # 8 extra bytes for the Huffman-tree ptr
 
   mov    rbx, QWORD PTR [rsi + 8]
 
@@ -50,7 +50,6 @@ main:
   # First encode the text. This will also initialize the Huffman-tree and the codebook
   mov    rdi, rbx
   mov    rsi, rsp
-  lea    rdx, [rsp + codebook_size]
   call   encode
   mov    r12, rax                             # Save the returned message ptr
 
@@ -65,7 +64,6 @@ main:
 
   # Decode and print the message
   mov    rdi, r12
-  mov    rsi, QWORD PTR [rsp + codebook_size]
   call   decode
   mov    r13, rax
   mov    rdi, OFFSET decoded
@@ -79,7 +77,7 @@ main:
   mov    rdi, r13
   call   free
 
-  add    rsp, codebook_size + 8
+  add    rsp, codebook_size
   pop    r13
   pop    r12
   pop    rbx
@@ -90,7 +88,6 @@ main:
 
 # rdi - text
 # rsi - codebook ptr
-# rdx - Huffman-tree ptr
 # RET rax - encoded message ptr
 encode:
   push   r12
@@ -98,11 +95,8 @@ encode:
   push   r14
   mov    r12, rdi                             # Save the original arguments
   mov    r13, rsi
-  mov    r14, rdx
   call   generate_tree                        # The text is already in rdi
-  mov    QWORD PTR [r14], rax                 # Save the Huffman-tree's root
-  mov    rdi, r13                             # Set up the parameters for codebook generation: codebook ptr, Huffman-tree root
-  mov    rsi, rax
+  mov    rdi, r13                             # Set up the parameters for codebook generation: codebook ptr
   call   generate_codebook
   xor    rax, rax
   xor    r14, r14                             # We'll use r14 to keep track of the length of the message
@@ -174,25 +168,22 @@ encode_done:
   ret
 
 # rdi - encoded message
-# rsi - Huffman-tree root (ptr)
 # RET rax - the decoded message
 decode:
   push   r12
   push   r13
-  push   r14
   mov    r12, rdi
-  mov    r13, rsi
   mov    rdi, QWORD PTR [r12]                 # Load the length of the message
-  mov    r14, rdi                             # We'll use the length of the message as a loop counter later
+  mov    r13, rdi                             # We'll use the length of the message as a loop counter later
   lea    rdi, [rdi + 1]                       # The null terminator
   call   malloc                               # This will usually be more than enough memory to contain the whole decoded message (we don't handle pathological cases right now)
   mov    rdi, r12                             # The single-character decoder doesn't touch rdi so we can hoist it before the loop
   xor    rcx, rcx
   mov    rdx, rax                             # The current byte in the output string
 decode_loop:
-  cmp    rcx, r14                             # The encoded message bit counter
+  cmp    rcx, r13                             # The encoded message bit counter
   jge    decode_done
-  mov    rsi, r13                             # The current node in the Huffman-tree
+  mov    rsi, QWORD PTR [rip + tree_root]     # The current node in the Huffman-tree
 decode_loop_char:
   test   rsi, rsi                             # If the Huffman-tree node is null then we reached a dead-end -> start over
   jz     decode_loop
@@ -219,17 +210,13 @@ decode_loop_char_branch:
   jmp    decode_loop_char
 decode_done:
   mov    BYTE PTR [rdx], 0                    # Write the null terminator at the end of the string
-  pop    r14
   pop    r13
   pop    r12
   ret
 
 # rdi - The starting address of the codebook we want to generate
-# rsi - Huffman-tree root (ptr)
 generate_codebook:
-  push   r12
-  sub    rsp, bitstr_size + 16                # 16 extra bytes for alignment
-  mov    r12, rsi
+  sub    rsp, bitstr_size
   xorps  xmm0, xmm0                           # Create a 0-initialized bitstring. This will be
   movaps XMMWORD PTR [rsp], xmm0              # used in the recursive function calls
   movaps XMMWORD PTR [rsp + 16], xmm0
@@ -238,11 +225,10 @@ generate_codebook:
   mov    rdx, codebook_size
   call   memset
   mov    rdi, rax
-  mov    rsi, r12
+  mov    rsi, QWORD PTR [rip + tree_root]
   mov    rdx, rsp
   call   generate_codebook_recurse
-  add    rsp, bitstr_size + 16
-  pop    r12
+  add    rsp, bitstr_size
   ret
 
 # rdi - The codebook's starting address
@@ -352,6 +338,7 @@ generate_tree_branches:
 generate_tree_done:
   lea    rdi, [rsp + counts_size]             # The tree's root will be in rax after the pop
   call   heap_pop
+  mov    QWORD PTR [rip + tree_root], rax
   add    rsp, 5128
   pop    r13
   pop    r12
@@ -516,7 +503,8 @@ tree_alloc:
   ret
 
 .data
-  .comm tree, 16384, 32
+  .comm tree,       16384, 32
+  .comm tree_root,  8,     8
 tree_next:
-  .quad tree + 32
+  .quad tree
   .size tree_next, 8
