@@ -11,6 +11,8 @@
   original:   .string "Original message: %s\n"
   encoded:    .string "Encoded message: "
   decoded:    .string "Decoded message: %s\n"
+  benchmark:  .string "%ds, %lu ns\n"
+  file_read:  .string "r"
 
   .equ bitstr_len,       32
   .equ bitstr_size,      40
@@ -31,21 +33,61 @@
   .equ msg_data,         8
 .section .text
   .global main
-  .extern printf, calloc, malloc, memset, puts
+  .extern printf, calloc, malloc, memset, puts, clock_gettime, fopen, fclose, fseek, ftell, fread, rewind
 
 main:
   push   rbx
   push   r12
   push   r13
-  sub    rsp, codebook_size                   # 8 extra bytes for the Huffman-tree ptr
+  push   r14
+  push   r15
+  sub    rsp, codebook_size + 16              # 8 extra bytes for the Huffman-tree ptr
 
-  mov    rbx, QWORD PTR [rsi + 8]
+  # Read the input file
+  mov    rdi, QWORD PTR [rsi + 8]
+  mov    rsi, OFFSET file_read
+  call   fopen
+  mov    r12, rax
+
+  mov    rdi, rax
+  xor    rsi, rsi
+  mov    rdx, 2
+  call   fseek
+
+  mov    rdi, r12
+  call   ftell
+  mov    r13, rax
+
+  mov    rdi, r12
+  call   rewind
+
+  mov    rdi, 1
+  mov    rsi, r13
+  add    rsi, 1
+  call   calloc
+  mov    rbx, rax
+  
+  mov    rdi, rax
+  mov    rsi, 1
+  mov    rdx, r13
+  mov    rcx, r12
+  call   fread
+
+  mov    rdi, r12
+  call   fclose
+
+  # Start benchmarking
+  xor    rdi, rdi
+  lea    rsi, [rsp + codebook_size]
+  call   clock_gettime
+  mov    r14d, DWORD PTR [rsp + codebook_size]
+  mov    r15, QWORD PTR [rsp + codebook_size + 8]
 
   # Print the original text
-  mov    rdi, OFFSET original
-  mov    rsi, rbx
-  xor    rax, rax
-  call   printf
+  # mov    rdi, OFFSET original
+  # mov    rsi, rbx
+  # xor    rax, rax
+  # call   printf
 
   # First encode the text. This will also initialize the Huffman-tree and the codebook
   mov    rdi, rbx
@@ -54,20 +96,32 @@ main:
   mov    r12, rax                             # Save the returned message ptr
 
   # Print the codebook and the encoded message
-  mov    rdi, rsp
-  call   print_codebook
-  mov    rdi, OFFSET encoded
-  xor    rax, rax
-  call   printf
-  mov    rdi, r12
-  call   print_message
+  # mov    rdi, rsp
+  # call   print_codebook
+  # mov    rdi, OFFSET encoded
+  # xor    rax, rax
+  # call   printf
+  # mov    rdi, r12
+  # call   print_message
 
   # Decode and print the message
   mov    rdi, r12
   call   decode
   mov    r13, rax
-  mov    rdi, OFFSET decoded
-  mov    rsi, r13
+  # mov    rdi, OFFSET decoded
+  # mov    rsi, r13
+  # xor    rax, rax
+  # call   printf
+
+  # End benchmarking
+  xor    rdi, rdi
+  lea    rsi, [rsp + codebook_size]
+  call   clock_gettime
+  mov    esi, DWORD PTR [rsp + codebook_size]
+  mov    rdx, QWORD PTR [rsp + codebook_size + 8]
+  mov    rdi, OFFSET benchmark
+  sub    rsi, r14
+  sub    rdx, r15
   xor    rax, rax
   call   printf
 
@@ -77,7 +131,9 @@ main:
   mov    rdi, r13
   call   free
 
-  add    rsp, codebook_size
+  add    rsp, codebook_size + 16
+  pop    r15
+  pop    r14
   pop    r13
   pop    r12
   pop    rbx
@@ -172,7 +228,10 @@ encode_done:
 decode:
   push   r12
   push   r13
+  push   r14
+  push   r15
   mov    r12, rdi
+  mov    r15, QWORD PTR [rip + tree_root]
   mov    rdi, QWORD PTR [r12]                 # Load the length of the message
   mov    r13, rdi                             # We'll use the length of the message as a loop counter later
   lea    rdi, [rdi + 1]                       # The null terminator
@@ -183,13 +242,14 @@ decode:
 decode_loop:
   cmp    rcx, r13                             # The encoded message bit counter
   jge    decode_done
-  mov    rsi, QWORD PTR [rip + tree_root]     # The current node in the Huffman-tree
+  mov    rsi, r15                             # The current node in the Huffman-tree
 decode_loop_char:
   test   rsi, rsi                             # If the Huffman-tree node is null then we reached a dead-end -> start over
   jz     decode_loop
-  cmp    QWORD PTR [rsi + tree_left], 0       # If the node has either a left or a right child, treat it as a branch
-  jnz    decode_loop_char_branch
-  cmp    QWORD PTR [rsi + tree_right], 0
+  mov    r8, QWORD PTR [rsi + tree_left]      # Load the left child
+  mov    r14, QWORD PTR [rsi + tree_right]    # Load the right child
+  mov    r11, r8
+  or     r11, r14
   jnz    decode_loop_char_branch
   mov    r9d, DWORD PTR [rsi + tree_value]    # Load the value in this node in case the next iteration needs it
   mov    BYTE PTR [rdx], r9b                  # And save it to the output
@@ -204,12 +264,13 @@ decode_loop_char_branch:
   shr    r10, cl                              # Get the bit we're interested in to position 0
   lea    rcx, [r11 + 1]                       # Restore rcx and immediately add 1 to get the next bit to decode
   and    r10, 0x1                             # Zero out all other bits
-  mov    r8, rsi
-  mov    rsi, QWORD PTR [r8 + tree_left]      # Take the left branch for 0, the right branch for a non-zero bit
-  cmovnz rsi, QWORD PTR [r8 + tree_right]
+  mov    rsi, r8                              # Take the left branch for 0, the right branch for a non-zero bit
+  cmovnz rsi, r14
   jmp    decode_loop_char
 decode_done:
   mov    BYTE PTR [rdx], 0                    # Write the null terminator at the end of the string
+  pop    r15
+  pop    r14
   pop    r13
   pop    r12
   ret
